@@ -1,6 +1,21 @@
 const rl = @import("raylib");
 const std = @import("std");
 
+const Opcode = packed struct(u16) {
+    n: u4,
+    y: u4,
+    x: u4,
+    t: u4,
+
+    pub fn nn(self: Opcode) u8 {
+        return (@as(u8, self.y) << 4) | self.n;
+    }
+
+    pub fn nnn(self: Opcode) u12 {
+        return (@as(u12, self.x) << 8) | (@as(u12, self.y) << 4) | self.n;
+    }
+};
+
 const Chip8 = struct {
     registers: [16]u8,
     memory: [4096]u8,
@@ -30,7 +45,7 @@ const Chip8 = struct {
             .keypad = [_]bool{false} ** 16,
             .video = [_][64]bool{[_]bool{false} ** 64} ** 32,
             .opcode = 0,
-            .prng = std.Random.DefaultPrng.init(66),
+            .prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp())),
         };
 
         const file = try std.fs.cwd().openFile(filename, .{});
@@ -344,71 +359,57 @@ const Chip8 = struct {
     }
 
     fn cycle(self: *Chip8) void {
-        const high_byte = @as(u16, self.memory[self.pc]);
-        const low_byte = @as(u16, self.memory[self.pc + 1]);
-        const opcode = (high_byte << 8) | low_byte;
+        const raw_opcode = std.mem.readInt(u16, self.memory[self.pc..][0..2], .big);
+        const op: Opcode = @bitCast(raw_opcode);
         self.pc += 2;
-        const first_nibble = (opcode & 0xf000) >> 12;
 
-        switch (first_nibble) {
-            0x0 => {
-                const last_byte = opcode & 0x00ff;
-                switch (last_byte) {
-                    0xe0 => self.op_00e0(),
-                    0xee => self.op_00ee(),
-                    else => std.debug.print("unknown 0x0 subopcode\n", .{}),
-                }
+        switch (op.t) {
+            0x0 => switch (op.nn()) {
+                0xe0 => self.op_00e0(),
+                0xee => self.op_00ee(),
+                else => std.debug.print("unknown 0x0 subopcode\n", .{}),
             },
-            0x1 => self.op_1nnn(opcode & 0x0fff),
-            0x2 => self.op_2nnn(opcode & 0x0fff),
-            0x3 => self.op_3xnn(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u8, @truncate(opcode & 0x00ff))),
-            0x4 => self.op_4xnn(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u8, @truncate(opcode & 0x00ff))),
-            0x5 => self.op_5xy0(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u4, @truncate((opcode & 0x00f0) >> 4))),
-            0x6 => self.op_6xnn(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u8, @truncate(opcode & 0x00ff))),
-            0x7 => self.op_7xnn(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u8, @truncate(opcode & 0x00ff))),
-            0x8 => {
-                const last_byte = opcode & 0x000f;
-                switch (last_byte) {
-                    0x0 => self.op_8xy0(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u4, @truncate((opcode & 0x00f0) >> 4))),
-                    0x1 => self.op_8xy1(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u4, @truncate((opcode & 0x00f0) >> 4))),
-                    0x2 => self.op_8xy2(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u4, @truncate((opcode & 0x00f0) >> 4))),
-                    0x3 => self.op_8xy3(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u4, @truncate((opcode & 0x00f0) >> 4))),
-                    0x4 => self.op_8xy4(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u4, @truncate((opcode & 0x00f0) >> 4))),
-                    0x5 => self.op_8xy5(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u4, @truncate((opcode & 0x00f0) >> 4))),
-                    0x6 => self.op_8xy6(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u4, @truncate((opcode & 0x00f0) >> 4))),
-                    0xe => self.op_8xye(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u4, @truncate((opcode & 0x00f0) >> 4))),
-                    else => std.debug.print("unknown 0x8 subopcode\n", .{}),
-                }
+            0x1 => self.op_1nnn(op.nnn()),
+            0x2 => self.op_2nnn(op.nnn()),
+            0x3 => self.op_3xnn(op.x, op.nn()),
+            0x4 => self.op_4xnn(op.x, op.nn()),
+            0x5 => self.op_5xy0(op.x, op.y),
+            0x6 => self.op_6xnn(op.x, op.nn()),
+            0x7 => self.op_7xnn(op.x, op.nn()),
+            0x8 => switch (op.n) {
+                0x0 => self.op_8xy0(op.x, op.y),
+                0x1 => self.op_8xy1(op.x, op.y),
+                0x2 => self.op_8xy2(op.x, op.y),
+                0x3 => self.op_8xy3(op.x, op.y),
+                0x4 => self.op_8xy4(op.x, op.y),
+                0x5 => self.op_8xy5(op.x, op.y),
+                0x6 => self.op_8xy6(op.x, op.y),
+                0xe => self.op_8xye(op.x, op.y),
+                else => std.debug.print("unknown 0x8 subopcode\n", .{}),
             },
-            0x9 => self.op_9xy0(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u4, @truncate((opcode & 0x00f0) >> 4))),
-            0xa => self.op_annn(opcode & 0x0fff),
-            0xb => self.op_bnnn(opcode & 0x0fff),
-            0xc => self.op_cxnn(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u8, @truncate(opcode & 0x00ff))),
-            0xd => self.op_dxyn(@as(u4, @truncate((opcode & 0x0f00) >> 8)), @as(u4, @truncate((opcode & 0x00f0) >> 4)), @as(u4, @truncate(opcode & 0x000f))),
-            0xe => {
-                const last_byte = opcode & 0x00ff;
-                switch (last_byte) {
-                    0x9e => self.op_ex9e(@as(u4, @truncate((opcode & 0x0f00) >> 8))),
-                    0xa1 => self.op_exa1(@as(u4, @truncate((opcode & 0x0f00) >> 8))),
-                    else => std.debug.print("unknown 0xe subopcode\n", .{}),
-                }
+            0x9 => self.op_9xy0(op.x, op.y),
+            0xa => self.op_annn(op.nnn()),
+            0xb => self.op_bnnn(op.nnn()),
+            0xc => self.op_cxnn(op.x, op.nn()),
+            0xd => self.op_dxyn(op.x, op.y, op.n),
+            0xe => switch (op.nn()) {
+                0x9e => self.op_ex9e(op.x),
+                0xa1 => self.op_exa1(op.x),
+                else => std.debug.print("unknown 0xe subopcode\n", .{}),
             },
-            0xf => {
-                const last_byte = opcode & 0x00ff;
-                switch (last_byte) {
-                    0x07 => self.op_fx07(@as(u4, @truncate((opcode & 0x0f00) >> 8))),
-                    0x0a => self.op_fx0a(@as(u4, @truncate((opcode & 0x0f00) >> 8))),
-                    0x15 => self.op_fx15(@as(u4, @truncate((opcode & 0x0f00) >> 8))),
-                    0x18 => self.op_fx18(@as(u4, @truncate((opcode & 0x0f00) >> 8))),
-                    0x1e => self.op_fx1e(@as(u4, @truncate((opcode & 0x0f00) >> 8))),
-                    0x29 => self.op_fx29(@as(u4, @truncate((opcode & 0x0f00) >> 8))),
-                    0x33 => self.op_fx33(@as(u4, @truncate((opcode & 0x0f00) >> 8))),
-                    0x55 => self.op_fx55(@as(u4, @truncate((opcode & 0x0f00) >> 8))),
-                    0x65 => self.op_fx65(@as(u4, @truncate((opcode & 0x0f00) >> 8))),
-                    else => std.debug.print("unknown 0xf subopcode\n", .{}),
-                }
+            0xf => switch (op.nn()) {
+                0x07 => self.op_fx07(op.x),
+                0x0a => self.op_fx0a(op.x),
+                0x15 => self.op_fx15(op.x),
+                0x18 => self.op_fx18(op.x),
+                0x1e => self.op_fx1e(op.x),
+                0x29 => self.op_fx29(op.x),
+                0x33 => self.op_fx33(op.x),
+                0x55 => self.op_fx55(op.x),
+                0x65 => self.op_fx65(op.x),
+                else => std.debug.print("unknown 0xf subopcode\n", .{}),
             },
-            else => std.debug.print("unknown opcode\n", .{}),
+            //else => std.debug.print("unknown opcode\n", .{}),
         }
     }
 
